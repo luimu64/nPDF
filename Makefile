@@ -28,7 +28,25 @@ MUPDF_OUT := $(MUPDF_DIR)/build/$(MUPDF_BUILD)
 # discard whole input sections, so almost nothing gets collected from libmupdf.a.
 NPDF_ARCHFLAGS ?= -marm -ffunction-sections -fdata-sections
 
+# Anti-aliasing is chosen at MuPDF build time via AA_BITS and controls the rasterizer's
+# supersampling grid (mupdf/source/fitz/draw-imp.h):
+#     AA_BITS unset -> 8 bits, 17x15 grid = 255 coverage cells per run  (MuPDF default)
+#     AA_BITS=6     -> 8x8   grid = 64 cells
+#     AA_BITS=4     -> 5x3   grid = 15 cells
+#     AA_BITS=2     -> 2x2   grid = 4 cells
+#     AA_BITS=0     -> 1x1   grid = 1 cell (hard edges, no AA)
+# This only affects build configuration, not the app: the value is baked into
+# fz_set_rasterizer_*_aa_level() below the compile-time branch, so fz_set_aa_level() from the
+# viewer cannot change it once the library is built this way.
+# Lowering it makes page rasterization dramatically cheaper on a 132 MHz core, at the cost of
+# aliased text and vector edges. Enable deliberately - it changes visual output:
+#     make AA_BITS=4
+# Leave unset for stock MuPDF rendering.
+ifdef AA_BITS
+MUPDF_XCFLAGS := -DNOCJK -DAA_BITS=$(AA_BITS) $(NPDF_ARCHFLAGS)
+else
 MUPDF_XCFLAGS := -DNOCJK $(NPDF_ARCHFLAGS)
+endif
 
 CXX := nspire-g++
 CXXFLAGS := -O$(OPTIMIZE) -Wall -Wextra -std=gnu++14 $(NPDF_ARCHFLAGS) -I $(MUPDF_INC)
