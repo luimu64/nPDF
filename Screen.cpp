@@ -66,8 +66,26 @@ namespace Screen {
 	// The RGBA and GrayA functions display pixmaps with premultiplied alpha. The alpha component is
 	// ignored since we aren't compositing
 
+	// Fast path for the 16-bit colour models: walk the destination and source with row pointers
+	// instead of recomputing y*SCREEN_WIDTH+x for every pixel, hoist the per-pixel bounds check
+	// (the caller already clamps w/h to the screen) and skip the `type` branch inside the loop.
+	// This is the hottest loop in the program: it runs once per visible pixel on every scroll step.
 	void showImgRGB(uint8_t *img, unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1,
 			unsigned int w, unsigned int h, unsigned int wImg) {
+		if (type == SCR_320x240_565) {
+			uint16_t *srow = reinterpret_cast<uint16_t*>(screen) + (uintptr_t)y0 * SCREEN_WIDTH + x0;
+			for (unsigned int i = 0; i < h; i++) {
+				const uint8_t *src = img + 3u * ((y1 + i) * wImg + x1);
+				uint16_t *dst = srow;
+				for (unsigned int j = 0; j < w; j++) {
+					uint8_t r = src[0], g = src[1], b = src[2];
+					*dst++ = static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+					src += 3;
+				}
+				srow += SCREEN_WIDTH;
+			}
+			return;
+		}
 		unsigned int pos;
 		for (unsigned int i = y1; i < y1 + h; i++) {
 			for (unsigned int j = x1; j < x1 + w; j++) {
@@ -79,6 +97,20 @@ namespace Screen {
 
 	void showImgRGBA(uint8_t *img, unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1,
 			unsigned int w, unsigned int h, unsigned int wImg) {
+		if (type == SCR_320x240_565) {
+			uint16_t *srow = reinterpret_cast<uint16_t*>(screen) + (uintptr_t)y0 * SCREEN_WIDTH + x0;
+			for (unsigned int i = 0; i < h; i++) {
+				const uint8_t *src = img + 4u * ((y1 + i) * wImg + x1);
+				uint16_t *dst = srow;
+				for (unsigned int j = 0; j < w; j++) {
+					uint8_t r = src[0], g = src[1], b = src[2];
+					*dst++ = static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+					src += 4;
+				}
+				srow += SCREEN_WIDTH;
+			}
+			return;
+		}
 		unsigned int pos;
 		for (unsigned int i = y1; i < y1 + h; i++) {
 			for (unsigned int j = x1; j < x1 + w; j++) {
@@ -90,6 +122,19 @@ namespace Screen {
 
 	void showImgGray(uint8_t *img, unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1,
 			unsigned int w, unsigned int h, unsigned int wImg) {
+		if (type == SCR_320x240_565) {
+			uint16_t *srow = reinterpret_cast<uint16_t*>(screen) + (uintptr_t)y0 * SCREEN_WIDTH + x0;
+			for (unsigned int i = 0; i < h; i++) {
+				const uint8_t *src = img + (y1 + i) * wImg + x1;
+				uint16_t *dst = srow;
+				for (unsigned int j = 0; j < w; j++) {
+					uint8_t c = *src++;
+					*dst++ = static_cast<uint16_t>(((c & 0xF8) << 8) | ((c & 0xFC) << 3) | (c >> 3));
+				}
+				srow += SCREEN_WIDTH;
+			}
+			return;
+		}
 		unsigned int pos;
 		for (unsigned int i = y1; i < y1 + h; i++) {
 			for (unsigned int j = x1; j < x1 + w; j++) {
@@ -99,8 +144,24 @@ namespace Screen {
 		}
 	}
 
+	// Gray+alpha source, destination is 16-bit colour: the 4-bit gray LCD path keeps the old
+	// per-pixel helper, every colour Nspire takes the pointer walk.
 	void showImgGrayA(uint8_t *img, unsigned int x0, unsigned int y0, unsigned int x1, unsigned int y1,
 			unsigned int w, unsigned int h, unsigned int wImg) {
+		if (type == SCR_320x240_565) {
+			uint16_t *srow = reinterpret_cast<uint16_t*>(screen) + (uintptr_t)y0 * SCREEN_WIDTH + x0;
+			for (unsigned int i = 0; i < h; i++) {
+				const uint8_t *src = img + 2u * ((y1 + i) * wImg + x1);
+				uint16_t *dst = srow;
+				for (unsigned int j = 0; j < w; j++) {
+					uint8_t c = src[0];
+					*dst++ = static_cast<uint16_t>(((c & 0xF8) << 8) | ((c & 0xFC) << 3) | (c >> 3));
+					src += 2;
+				}
+				srow += SCREEN_WIDTH;
+			}
+			return;
+		}
 		unsigned int pos;
 		for (unsigned int i = y1; i < y1 + h; i++) {
 			for (unsigned int j = x1; j < x1 + w; j++) {
@@ -128,6 +189,18 @@ namespace Screen {
 
 	void fillRect(uint8_t r, uint8_t g, uint8_t b, unsigned int x, unsigned int y, unsigned int w,
 			unsigned int h) {
+		// Row-pointer fast path: fillRect is called with screen-sized rectangles several times
+		// per display() to paint the letterbox background, so the per-pixel helper is costly here.
+		if (type == SCR_320x240_565) {
+			uint16_t color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+			for (unsigned int j = y; j < y + h && j < SCREEN_HEIGHT; j++) {
+				uint16_t *row = reinterpret_cast<uint16_t*>(screen) + (uintptr_t)j * SCREEN_WIDTH;
+				unsigned int xe = x + w; if (xe > SCREEN_WIDTH) xe = SCREEN_WIDTH;
+				for (unsigned int i = x; i < xe; i++)
+					row[i] = color;
+			}
+			return;
+		}
 		for (unsigned int i = x; i < x + w; i++) {
 			for (unsigned int j = y; j < y + h; j++) {
 				setPixel(r, g, b, i, j);
@@ -140,12 +213,29 @@ namespace Screen {
 	}
 
 	void drawVert(uint8_t r, uint8_t g, uint8_t b, unsigned int x, unsigned int y, unsigned int h) {
+		if (type == SCR_320x240_565 && x < SCREEN_WIDTH) {
+			uint16_t color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+			uint16_t *col = reinterpret_cast<uint16_t*>(screen) + (uintptr_t)y * SCREEN_WIDTH + x;
+			for (unsigned int j = 0; j < h && y + j < SCREEN_HEIGHT; j++) {
+				*col = color;
+				col += SCREEN_WIDTH;
+			}
+			return;
+		}
 		for (unsigned int j = y; j < y + h; j++) {
 			setPixel(r, g, b, x, j);
 		}
 	}
 
 	void drawHoriz(uint8_t r, uint8_t g, uint8_t b, unsigned int x, unsigned int y, unsigned int w) {
+		if (type == SCR_320x240_565 && y < SCREEN_HEIGHT) {
+			uint16_t color = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+			uint16_t *row = reinterpret_cast<uint16_t*>(screen) + (uintptr_t)y * SCREEN_WIDTH + x;
+			unsigned int xe = x + w; if (xe > SCREEN_WIDTH) xe = SCREEN_WIDTH;
+			for (unsigned int i = x; i < xe; i++)
+				*row++ = color;
+			return;
+		}
 		for (unsigned int i = x; i < x + w; i++) {
 			setPixel(r, g, b, i, y);
 		}

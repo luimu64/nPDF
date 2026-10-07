@@ -73,6 +73,11 @@ void Viewer::invert(const fz_rect *rect) {
 bool Viewer::find(const char *s) {
 	if (matchIdx != -1)
 		invert(&matches[matchIdx]);
+	if (!ensurePageText()) {
+		matchesCount = 0;
+		matchIdx = -1;
+		return false;
+	}
 	matchesCount = fz_search_stext_page(ctx, pageText, s, matches, nelem(matches));
 	matchIdx = -1;
 	return (matchesCount > 0);
@@ -135,10 +140,22 @@ void Viewer::fixBounds() {
 
 void Viewer::drawPage() {
 	fz_drop_pixmap(ctx, pix);
-	fz_drop_stext_page(ctx, pageText);
 
 	pix = nullptr;
-	pageText = nullptr;
+
+	// NOTE: pageText is deliberately *not* built or dropped here. Building it walks the whole
+	// page content stream a second time and allocates a fz_stext_page in the document arena;
+	// that cost was previously paid on every page turn and every zoom step even when the user
+	// never searched. ensurePageText() now builds it on demand, and it is dropped here only
+	// when the page underneath it is actually replaced, so the cached text stays valid across
+	// scroll/zoom redraws of the same page.
+	if (pageText && !curPageLoaded) {
+		// page is about to be replaced, so any cached text no longer describes it
+		fz_drop_stext_page(ctx, pageText);
+		pageText = nullptr;
+		matchesCount = 0;
+		matchIdx = -1;
+	}
 
 	if (!curPageLoaded) {
 		fz_drop_page(ctx, page);
@@ -172,9 +189,21 @@ void Viewer::drawPage() {
 	fz_drop_device(ctx, dev);
 	dev = nullptr;
 
-	pageText = fz_new_stext_page_from_page(ctx, page, nullptr);
-
+	// pageText is now built lazily by ensurePageText() when a search is actually requested.
+	// Invalidate any previous match list because the page identity changed.
+	matchesCount = 0;
 	matchIdx = -1;
+}
+
+// Build the structured-text representation of the current page on demand.
+// Returns nullptr if there is no page or if allocation fails.
+fz_stext_page *Viewer::ensurePageText() {
+	if (pageText)
+		return pageText;
+	if (!page)
+		return nullptr;
+	pageText = fz_new_stext_page_from_page(ctx, page, nullptr);
+	return pageText;
 }
 
 void Viewer::display() {

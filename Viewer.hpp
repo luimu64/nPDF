@@ -53,6 +53,7 @@ class Viewer {
 		Viewer();
 		~Viewer();
 		void invert(const fz_rect *rect);
+		fz_stext_page *ensurePageText();
 		bool find(const char *s);
 		bool findNext(bool dir);
 		void openDoc(const char *path);
