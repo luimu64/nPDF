@@ -149,6 +149,9 @@ I searched for existing prior art and compared each technique against this speci
 | `-mcpu` / `-mtune` / `-marm` tuning | GCC ARM Options | **Trap.** See §2. `-marm` is safe and I use it; the `-mcpu`/`-mfpu` combination can silently emit unexecutable code. |
 | `-ffast-math` | GCC docs | **Not applicable here.** I grepped: `Screen.cpp` contains no float at all, and the `Viewer` float work is per-page, not per-pixel. It would buy nothing on the hot path while risking rendering differences in MuPDF's own math. |
 | `-flto` across the `libmupdf.a` boundary | GCC docs | **Speculative.** Plausible, but nspire-g+++the Ndless link step is exactly where LTO support is least certain. Recommend only as an experiment. |
+| `-marm`, never `-mthumb` | GCC ARM Options; ARM9 pipeline literature (see §6) | **Confirmed and already applied.** On ARM9 the 16-bit Thumb encoding restricts most instructions to R0–R7, forcing extra moves and creating interlocks on the otherwise identical 5-stage core — code size improves, throughput does not. |
+| `-mfloat-abi=soft` only; skip `-mfpu` | ARM TRM (no VFP on ARM926EJ-S) | **Confirmed by reasoning, untested here.** With no FPU, hard/softfp are meaningless rather than merely unhelpful. My cross-toolchain ships only the hard-float libc stubs, so I could not exercise a soft-ABI build — noted as a gap. |
+| `-fomit-frame-pointer` | GCC docs | **No-op.** Measured: 13 R11/frame-pointer refs at `-O0`, zero at `-O1`/`-O2`/`-O3`. Already implied; nothing to gain. |
 | Disable more MuPDF features (`TOFU_*`, `NO_ICC`) to shrink the binary | MuPDF `config.h` | **Already done.** The fork's `config.h` sets `TOFU`, `TOFU_CJK`, `FZ_ENABLE_XPS=0`, `FZ_PLOTTERS_* = 0`, `FZ_ENABLE_JS=0`. `-DNO_ICC` is already reaching the compile line (verified via `make -n`). Nothing left to win cheaply. |
 | Existing nPDF forks with speed work | GitHub | **None found.** No prior art to reuse. |
 
@@ -162,7 +165,31 @@ I searched for existing prior art and compared each technique against this speci
 3. **Pixmap `alpha`** — verify blending, then flip to the non-alpha path.
 4. **Bound `FZ_STORE_UNLIMITED`** — hygiene, protects against pathological documents.
 
-## 6. Reproducing the measurements
+## 6. Cross-check against the research subagents' output
+
+Two background research agents were dispatched for this task. BOTH died on a provider 429
+concurrency limit, but one returned a substantive partial report. I re-derived its claims
+against the source rather than accepting them. Results:
+
+| Subagent claim | Its confidence | My verification | Outcome |
+|---|---|---|---|
+| `-mcpu=arm926ej-s` / `-mtune=arm926ej-s` | "authoritative" | Executed it. The docs listing `arm926ej-s` as a valid value says nothing about a toolchain that *ignores* the flag and falls back to a newer default arch — which is how VFP/NEON got emitted in my testing. | **Rejected.** Doc-validity ≠ verified-on-target. See §2. |
+| `-fsingle-precision-constant` = "single highest-leverage flag" | "authoritative + hardware reasoning" | Grepped the source. `Screen.cpp` (the per-pixel path) contains **zero** float/double. `Viewer.cpp` has three float constants, all per-page. | **Rejected.** Reasoned from "MuPDF does float math" without checking whether nPDF's hot paths do. Zero gain on the bottleneck, nonzero risk. |
+| `-ffast-math` | "contentious, must be measured" | Same grep; also verified `Screen.cpp` has no float. | **Rejected** for the same reason. Correctly self-flagged as contentious. |
+| `-ffunction-sections -fdata-sections -Wl,--gc-sections`; "the linker flag alone does nothing" | "authoritative (binutils)" | Independently reproduced the two-function test object: one `.text` without the flags, split `.text.used_fn`/`.text.unused_fn` with them. | **Confirmed** — converges on change `1926a93`, same key insight. |
+| `-marm`, never `-mthumb` on ARM9 | "strong but partly historical" | Consistent with the register-set / interlock argument; I already use `-marm`. | **Confirmed**, and better articulated than my original note. |
+| `-mfloat-abi=soft`; hard/softfp meaningless with no FPU | "authoritative (hardware fact)" | My toolchain ships only `stubs-hard.h`, so I could not test a soft-ABI build at all. | **Confirmed by reasoning, untested by me.** Sharper than my §3.4 note. |
+| `-fomit-frame-pointer` already implied at `-O1+` | "authoritative" | Measured: 13 frame-pointer/R11 references at `-O0`, **0** at `-O1`, `-O2`, `-O3`. | **Confirmed.** A no-op for this build; correctly identified as such. |
+| `-fno-exceptions -fno-rtti`, `-DNDEBUG`, `-Wl,-O1`, `-funroll-loops`, `-flto` | mostly "anecdotal" / "weak" | Not applied. | **Not adopted** — self-flagged as conditional or risky, and none targets a measured bottleneck. |
+
+The pattern worth noting: the subagent's *authoritative* ratings were the weakest predictions.
+GCC doc pages tell you a flag's semantics; they cannot tell you whether your specific toolchain
+honours it, or whether the code you're compiling even contains the operation being optimized.
+Both of those required executing something.
+
+
+
+## 7. Reproducing the measurements
 
 Toolchain and benchmarks live in `/opt/data/cache/scratch/`:
 
@@ -178,7 +205,7 @@ g++ -O2 -o bench_ab bench_ab.cpp && ./bench_ab
 ./qemu-arm-static ./bench_ab_arm
 ```
 
-## 7. Before trusting any of this on hardware
+## 8. Before trusting any of this on hardware
 
 ```bash
 make && ls -la nPDF.tns
