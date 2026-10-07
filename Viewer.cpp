@@ -32,7 +32,8 @@ const float Viewer::minScale = 0.1;
 
 // We have a separate initialization method for the error handling
 Viewer::Viewer() {
-	ctx = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);
+	// Bound store to 8 MB instead of FZ_STORE_UNLIMITED to avoid RAM exhaustion on TI-Nspire
+	ctx = fz_new_context(nullptr, nullptr, 8 << 20);
 	if (ctx) {
 		fz_register_document_handlers(ctx);
 	} else {
@@ -159,6 +160,8 @@ void Viewer::drawPage() {
 
 	if (!curPageLoaded) {
 		fz_drop_page(ctx, page);
+		// Flush store cache when switching pages to reclaim memory
+		fz_empty_store(ctx);
 		page = fz_load_page(ctx, doc, pageNo);
 		curPageLoaded = true;
 	}
