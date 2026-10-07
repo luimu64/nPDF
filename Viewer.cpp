@@ -27,6 +27,7 @@ extern "C" {
 const int Viewer::scroll = 20;
 const float Viewer::zoom = 1.142857;
 const unsigned char Viewer::bgColor = 103;
+// Cap maxScale to 2.0 safely since viewport pixmap is always capped at 320x240
 const float Viewer::maxScale = 2.0;
 const float Viewer::minScale = 0.1;
 
@@ -174,10 +175,17 @@ void Viewer::drawPage() {
 	fz_scale(&transform, scale, scale);
 	fz_transform_rect(&bounds, &transform);
 
-	fz_irect bbox;
-	fz_round_rect(&bbox, &bounds);
-
 	fixBounds();
+
+	// Calculate screen viewport dimensions
+	int viewW = std::min(width, static_cast<int>(bounds.x1 - bounds.x0));
+	int viewH = std::min(height, static_cast<int>(bounds.y1 - bounds.y0));
+
+	fz_irect bbox;
+	bbox.x0 = 0;
+	bbox.y0 = 0;
+	bbox.x1 = viewW;
+	bbox.y1 = viewH;
 
 	if (has_colors) {
 		pix = fz_new_pixmap_with_bbox(ctx, fz_device_rgb(ctx), &bbox, nullptr, 1);
@@ -186,8 +194,12 @@ void Viewer::drawPage() {
 	}
 	fz_clear_pixmap_with_value(ctx, pix, 0xff);
 
+	// Translate the transform so that (xPos, yPos) maps to (0, 0) in the viewport pixmap
+	fz_matrix viewTransform = transform;
+	fz_pre_translate(&viewTransform, -xPos, -yPos);
+
 	fz_device *dev = fz_new_draw_device(ctx, nullptr, pix);
-	fz_run_page(ctx, page, dev, &transform, nullptr);
+	fz_run_page(ctx, page, dev, &viewTransform, nullptr);
 	fz_close_device(ctx, dev);
 	fz_drop_device(ctx, dev);
 	dev = nullptr;
@@ -225,9 +237,9 @@ void Viewer::display() {
 		Screen::fillRect(bgColor, y + pix->h, 0, width, height - (y + pix->h));
 	}
 	if (has_colors) {
-		Screen::showImgRGBA(pix->samples, x, y, xPos, yPos, std::min(width, pix->w), std::min(height, pix->h), pix->w);
+		Screen::showImgRGBA(pix->samples, x, y, 0, 0, std::min(width, pix->w), std::min(height, pix->h), pix->w);
 	} else {
-		Screen::showImgGrayA(pix->samples, x, y, xPos, yPos, std::min(width, pix->w), std::min(height, pix->h), pix->w);
+		Screen::showImgGrayA(pix->samples, x, y, 0, 0, std::min(width, pix->w), std::min(height, pix->h), pix->w);
 	}
 
 	if ((bounds.y1-bounds.y0)>height) {
@@ -273,6 +285,7 @@ void Viewer::scrollUp() {
 	if (yPos > 0) {
 		yPos -= scroll;
 		yPos = (yPos<0)?0:yPos;
+		drawPage();
 	}
 }
 
@@ -280,6 +293,7 @@ void Viewer::scrollDown() {
 	if (yPos < (bounds.y1 - bounds.y0) - height) {
 		yPos += scroll;
 		yPos = (yPos > (bounds.y1 - bounds.y0) - height)?(bounds.y1 - bounds.y0) - height:yPos;
+		drawPage();
 	}
 }
 
@@ -287,6 +301,7 @@ void Viewer::scrollLeft() {
 	if (xPos > 0) {
 		xPos -= scroll;
 		xPos = (xPos<0)?0:xPos;
+		drawPage();
 	}
 }
 
@@ -294,6 +309,7 @@ void Viewer::scrollRight() {
 	if (xPos < (bounds.x1 - bounds.x0) - width ) {
 		xPos += scroll;
 		xPos = (xPos > (bounds.x1 - bounds.x0) - width)?(bounds.x1 - bounds.x0) - width:xPos;
+		drawPage();
 	}
 }
 
